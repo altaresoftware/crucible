@@ -245,6 +245,7 @@ impl ProxyHandler {
         is_https: bool,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         let client_ip = client_addr.ip();
+        let client_ip_str = client_ip.to_string();
         let path = req.uri().path().to_string();
         let query = req.uri().query().unwrap_or("").to_string();
         let method = req.method().clone();
@@ -340,7 +341,15 @@ impl ProxyHandler {
             if static_server.is_php_file(&path).await {
                 if let Some(php_handler) = self.php_handlers.get(&host) {
                     return self
-                        .handle_php_request(req, php_handler, &path, &query, domain_config)
+                        .handle_php_request(
+                            req,
+                            php_handler,
+                            &path,
+                            &query,
+                            domain_config,
+                            &client_ip_str,
+                            is_https,
+                        )
                         .await;
                 }
             }
@@ -377,6 +386,8 @@ impl ProxyHandler {
                                             &path,
                                             &query,
                                             domain_config,
+                                            &client_ip_str,
+                                            is_https,
                                         )
                                         .await;
                                 }
@@ -409,6 +420,8 @@ impl ProxyHandler {
         path: &str,
         query: &str,
         domain_config: Option<&DomainConfig>,
+        client_ip: &str,
+        is_https: bool,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         debug!("Handling PHP request: {}", path);
 
@@ -425,7 +438,16 @@ impl ProxyHandler {
         let script_path = std::path::PathBuf::from(path.trim_start_matches('/'));
 
         match php_handler
-            .execute(&script_path, path, query, &method_str, &headers, body_bytes)
+            .execute(
+                &script_path,
+                path,
+                query,
+                &method_str,
+                &headers,
+                client_ip,
+                is_https,
+                body_bytes,
+            )
             .await
         {
             Ok(mut response) => {
@@ -458,6 +480,8 @@ impl ProxyHandler {
         request_uri: &str,
         query: &str,
         domain_config: Option<&DomainConfig>,
+        client_ip: &str,
+        is_https: bool,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         debug!("Handling PHP request: {} -> {}", request_uri, script_path);
 
@@ -474,7 +498,16 @@ impl ProxyHandler {
         let script_path_buf = std::path::PathBuf::from(script_path.trim_start_matches('/'));
 
         match php_handler
-            .execute(&script_path_buf, request_uri, query, &method_str, &headers, body_bytes)
+            .execute(
+                &script_path_buf,
+                request_uri,
+                query,
+                &method_str,
+                &headers,
+                client_ip,
+                is_https,
+                body_bytes,
+            )
             .await
         {
             Ok(mut response) => {

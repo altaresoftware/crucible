@@ -42,6 +42,8 @@ impl PhpFpm {
         query_string: &str,
         method: &str,
         headers: &hyper::HeaderMap,
+        client_ip: &str,
+        is_https: bool,
         body: Option<Vec<u8>>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         // Connect to PHP-FPM
@@ -64,6 +66,12 @@ impl PhpFpm {
         // Build FastCGI parameters
         // We need to store owned Strings for dynamic values
         let content_length_str;
+        let server_port_str;
+        let x_forwarded_port_str;
+        let host_header_owned;
+        let server_name_owned;
+        let x_forwarded_proto_owned;
+        let request_scheme_owned;
 
         let mut params = HashMap::new();
         params.insert("GATEWAY_INTERFACE", "CGI/1.1");
@@ -82,6 +90,87 @@ impl PhpFpm {
         params.insert("DOCUMENT_ROOT", self.script_filename_prefix.as_str());
         params.insert("SERVER_PROTOCOL", "HTTP/1.1");
         params.insert("REDIRECT_STATUS", "200");
+
+        // Derive host and ports
+        let host_header = headers
+            .get("host")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("");
+        host_header_owned = host_header.to_string();
+        let (server_name, server_port_from_host) = if let Some((h, p)) = host_header_owned.split_once(':') {
+            (h.to_string(), p.to_string())
+        } else {
+            (host_header_owned.clone(), String::new())
+        };
+        server_name_owned = server_name;
+        let default_port = if is_https { 443 } else { 80 };
+        server_port_str = if !server_port_from_host.is_empty() {
+            server_port_from_host.clone()
+        } else {
+            default_port.to_string()
+        };
+
+        // Standard CGI/server params
+        if !server_name_owned.is_empty() {
+            params.insert("SERVER_NAME", &server_name_owned);
+        }
+        params.insert("SERVER_PORT", &server_port_str);
+        params.insert("REMOTE_ADDR", client_ip);
+        if is_https {
+            params.insert("HTTPS", "on");
+        }
+        request_scheme_owned = if is_https { "https".to_string() } else { "http".to_string() };
+        params.insert("REQUEST_SCHEME", &request_scheme_owned);
+
+        // Forwarded headers for framework awareness
+        x_forwarded_proto_owned = if is_https { "https".to_string() } else { "http".to_string() };
+        x_forwarded_port_str = server_port_str.clone();
+        if !host_header_owned.is_empty() {
+            params.insert("HTTP_HOST", &host_header_owned);
+            params.insert("HTTP_X_FORWARDED_HOST", &host_header_owned);
+        }
+        params.insert("HTTP_X_FORWARDED_PROTO", &x_forwarded_proto_owned);
+        params.insert("HTTP_X_FORWARDED_PORT", &x_forwarded_port_str);
+        params.insert("HTTP_X_FORWARDED_FOR", client_ip);
+
+        // Cookies and common HTTP headers
+        if let Some(cookie) = headers.get("cookie") {
+            if let Ok(c) = cookie.to_str() {
+                params.insert("HTTP_COOKIE", c);
+            }
+        }
+        if let Some(ua) = headers.get("user-agent") {
+            if let Ok(v) = ua.to_str() {
+                params.insert("HTTP_USER_AGENT", v);
+            }
+        }
+        if let Some(accept) = headers.get("accept") {
+            if let Ok(v) = accept.to_str() {
+                params.insert("HTTP_ACCEPT", v);
+            }
+        }
+        if let Some(accept_lang) = headers.get("accept-language") {
+            if let Ok(v) = accept_lang.to_str() {
+                params.insert("HTTP_ACCEPT_LANGUAGE", v);
+            }
+        }
+        if let Some(accept_enc) = headers.get("accept-encoding") {
+            if let Ok(v) = accept_enc.to_str() {
+                params.insert("HTTP_ACCEPT_ENCODING", v);
+            }
+        }
+        if let Some(referer) = headers.get("referer") {
+            if let Ok(v) = referer.to_str() {
+                params.insert("HTTP_REFERER", v);
+            }
+        }
+        if let Some(origin) = headers.get("origin") {
+            if let Ok(v) = origin.to_str() {
+                params.insert("HTTP_ORIGIN", v);
+            }
+        }
+
+        
 
         // Add headers as CGI variables
         if let Some(content_type) = headers.get("content-type") {
