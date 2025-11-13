@@ -1,11 +1,11 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 
-use crate::config::{DomainConfig, HeaderConfig};
+use crate::config::DomainConfig;
 use crate::error_pages::{generate_html_error, generate_json_error, is_api_request};
 use crate::load_balancer::{ConnectionGuard, LoadBalancerManager};
 use crate::php_fpm::PhpFpm;
 use crate::security::AltareFlux;
-use crate::static_files::{add_security_headers, StaticFileServer};
+use crate::static_files::StaticFileServer;
 use anyhow::Result;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};

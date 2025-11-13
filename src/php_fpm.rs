@@ -1,14 +1,19 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
+//
+// PHP-FPM FastCGI implementation
+// Note: This module is complete but not yet fully integrated into the proxy handler.
+// It will be enabled once the integration is complete.
+
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Bytes;
-use hyper::{Request, Response, StatusCode};
+use hyper::{Response, StatusCode};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tracing::{debug, error};
 
 const FCGI_BEGIN_REQUEST: u8 = 1;
 const FCGI_PARAMS: u8 = 4;
@@ -53,6 +58,9 @@ impl PhpFpm {
             .ok_or_else(|| anyhow::anyhow!("Invalid script path"))?;
 
         // Build FastCGI parameters
+        // We need to store owned Strings for dynamic values
+        let content_length_str;
+
         let mut params = HashMap::new();
         params.insert("GATEWAY_INTERFACE", "CGI/1.1");
         params.insert("SERVER_SOFTWARE", "Crucible/1.0.0");
@@ -77,19 +85,8 @@ impl PhpFpm {
                 params.insert("CONTENT_LENGTH", cl);
             }
         } else if let Some(ref body_data) = body {
-            params.insert("CONTENT_LENGTH", &body_data.len().to_string());
-        }
-
-        // Convert other headers to HTTP_* variables
-        for (name, value) in headers {
-            let header_name = format!(
-                "HTTP_{}",
-                name.as_str().to_uppercase().replace('-', "_")
-            );
-            if let Ok(val) = value.to_str() {
-                // Note: We need to store these differently since params uses &str
-                // For now, we'll skip dynamic headers in this simplified implementation
-            }
+            content_length_str = body_data.len().to_string();
+            params.insert("CONTENT_LENGTH", &content_length_str);
         }
 
         let request_id: u16 = 1;
@@ -111,7 +108,6 @@ impl PhpFpm {
 
         // Read response
         let mut response_data = Vec::new();
-        let mut buffer = vec![0u8; 8192];
 
         loop {
             let header = read_record_header(&mut stream).await?;

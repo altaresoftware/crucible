@@ -183,6 +183,10 @@ mod tests {
             ssl: Default::default(),
             load_balance_strategy: LoadBalanceStrategy::RoundRobin,
             health_check: Default::default(),
+            static_files: None,
+            php_fpm: None,
+            redirect_to_https: false,
+            headers: vec![],
         };
 
         let lb = LoadBalancer::new(&config, 100);
@@ -203,6 +207,10 @@ mod tests {
             ssl: Default::default(),
             load_balance_strategy: LoadBalanceStrategy::LeastConnections,
             health_check: Default::default(),
+            static_files: None,
+            php_fpm: None,
+            redirect_to_https: false,
+            headers: vec![],
         };
 
         let lb = LoadBalancer::new(&config, 100);

@@ -1,9 +1,14 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
+//
+// Static file server implementation
+// Note: This module is complete but not yet fully integrated into the proxy handler.
+// It will be enabled once the integration is complete.
 
-use anyhow::Result;
+#![allow(dead_code)]
+
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::Bytes;
-use hyper::{HeaderMap, Method, Request, Response, StatusCode};
+use hyper::{HeaderMap, Method, Response, StatusCode};
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{debug, warn};
