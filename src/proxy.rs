@@ -123,18 +123,19 @@ impl ProxyHandler {
         };
 
         if backend_resp.status() != StatusCode::SWITCHING_PROTOCOLS {
-            // Not an upgrade after all; forward response as normal
             let (parts, body) = backend_resp.into_parts();
             let body = body.boxed();
             let mut resp = Response::from_parts(parts, body);
-            if let Some(config) = domain_config {
-                let headers_vec: Vec<(String, String)> = config
-                    .headers
-                    .iter()
-                    .map(|h| (h.name.clone(), h.value.clone()))
-                    .collect();
-                add_security_headers(resp.headers_mut(), &headers_vec);
-            }
+            let headers_vec: Vec<(String, String)> = domain_config
+                .map(|config| {
+                    config
+                        .headers
+                        .iter()
+                        .map(|h| (h.name.clone(), h.value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            add_security_headers(resp.headers_mut(), &headers_vec);
             return Ok(resp);
         }
 
@@ -146,6 +147,11 @@ impl ProxyHandler {
         for (name, value) in backend_resp.headers().iter() {
             builder = builder.header(name, value.clone());
         }
+        let powered = format!(
+            "crucible v{} (c) Altare Technologies Limited",
+            env!("CARGO_PKG_VERSION")
+        );
+        builder = builder.header("X-Powered-By", powered);
         let client_response = builder
             .body(
                 Empty::<Bytes>::new()
@@ -356,15 +362,16 @@ impl ProxyHandler {
 
             // Try serving static file
             if let Some(mut response) = static_server.serve(&path, &method, req.headers()).await {
-                // Add custom headers
-                if let Some(config) = domain_config {
-                    let headers_vec: Vec<(String, String)> = config
-                        .headers
-                        .iter()
-                        .map(|h| (h.name.clone(), h.value.clone()))
-                        .collect();
-                    add_security_headers(response.headers_mut(), &headers_vec);
-                }
+                let headers_vec: Vec<(String, String)> = domain_config
+                    .map(|config| {
+                        config
+                            .headers
+                            .iter()
+                            .map(|h| (h.name.clone(), h.value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                add_security_headers(response.headers_mut(), &headers_vec);
                 return Ok(response);
             }
 
@@ -451,14 +458,16 @@ impl ProxyHandler {
             .await
         {
             Ok(mut response) => {
-                if let Some(config) = domain_config {
-                    let headers_vec: Vec<(String, String)> = config
-                        .headers
-                        .iter()
-                        .map(|h| (h.name.clone(), h.value.clone()))
-                        .collect();
-                    add_security_headers(response.headers_mut(), &headers_vec);
-                }
+                let headers_vec: Vec<(String, String)> = domain_config
+                    .map(|config| {
+                        config
+                            .headers
+                            .iter()
+                            .map(|h| (h.name.clone(), h.value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                add_security_headers(response.headers_mut(), &headers_vec);
                 Ok(response)
             }
             Err(e) => {
@@ -575,15 +584,16 @@ impl ProxyHandler {
         // Proxy the request
         match self.proxy_request(req, &backend.url).await {
             Ok(mut response) => {
-                // Add custom headers
-                if let Some(config) = domain_config {
-                    let headers_vec: Vec<(String, String)> = config
-                        .headers
-                        .iter()
-                        .map(|h| (h.name.clone(), h.value.clone()))
-                        .collect();
-                    add_security_headers(response.headers_mut(), &headers_vec);
-                }
+                let headers_vec: Vec<(String, String)> = domain_config
+                    .map(|config| {
+                        config
+                            .headers
+                            .iter()
+                            .map(|h| (h.name.clone(), h.value.clone()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                add_security_headers(response.headers_mut(), &headers_vec);
                 Ok(response)
             }
             Err(e) => {
@@ -688,9 +698,14 @@ fn create_error_response(
     if is_api_request(path) {
         // Return JSON for API requests
         let json = generate_json_error(status, message);
+        let powered = format!(
+            "crucible v{} (c) Altare Technologies Limited",
+            env!("CARGO_PKG_VERSION")
+        );
         Response::builder()
             .status(status)
             .header("Content-Type", "application/json")
+            .header("X-Powered-By", powered)
             .body(
                 Full::new(Bytes::from(json))
                     .map_err(|never| match never {})
@@ -700,9 +715,14 @@ fn create_error_response(
     } else {
         // Return HTML for regular requests
         let html = generate_html_error(status, message);
+        let powered = format!(
+            "crucible v{} (c) Altare Technologies Limited",
+            env!("CARGO_PKG_VERSION")
+        );
         Response::builder()
             .status(status)
             .header("Content-Type", "text/html; charset=utf-8")
+            .header("X-Powered-By", powered)
             .body(
                 Full::new(Bytes::from(html))
                     .map_err(|never| match never {})

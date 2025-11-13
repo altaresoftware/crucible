@@ -44,6 +44,7 @@ pub fn generate_html_error(status: StatusCode, message: &str) -> String {
         ),
     };
 
+    let version = env!("CARGO_PKG_VERSION");
     format!(
         r#"<!doctype html>
 <html>
@@ -73,7 +74,7 @@ html {{
       <div class="space-y-4">
         <p>{description}</p>
         <p class="text-xs text-neutral-500 dark:text-neutral-400">{message}</p>
-        <code style="font-family: 'Space Mono'" class="text-xs text-neutral-300 dark:text-neutral-400 uppercase">POWERED BY ALTARE CRUCIBLE / V1.0.0</code>
+        <code style="font-family: 'Space Mono'" class="text-xs text-neutral-300 dark:text-neutral-400 uppercase">POWERED BY ALTARE CRUCIBLE / V{version}</code>
       </div>
       <hr class="my-6 w-full border-(--pattern-fg)" />
       <p class="mb-3">If you'd like to see updates regarding Altare's status:</p>
@@ -91,19 +92,21 @@ html {{
 </html>"#,
         title = title,
         description = description,
-        message = message
+        message = message,
+        version = version
     )
 }
 
 /// Generate a JSON error response for API endpoints
 pub fn generate_json_error(status: StatusCode, message: &str) -> String {
+    let version = env!("CARGO_PKG_VERSION");
     json!({
         "error": {
             "code": status.as_u16(),
             "status": status.canonical_reason().unwrap_or("Unknown"),
             "message": message,
             "timestamp": chrono::Utc::now().to_rfc3339(),
-            "powered_by": "Altare Crucible v1.0.0"
+            "powered_by": format!("Altare Crucible v{}", version)
         }
     })
     .to_string()

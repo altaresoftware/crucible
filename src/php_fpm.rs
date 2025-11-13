@@ -180,6 +180,16 @@ impl PhpFpm {
                 params.insert("HTTP_ORIGIN", v);
             }
         }
+        if let Some(acrm) = headers.get("access-control-request-method") {
+            if let Ok(v) = acrm.to_str() {
+                params.insert("HTTP_ACCESS_CONTROL_REQUEST_METHOD", v);
+            }
+        }
+        if let Some(acrh) = headers.get("access-control-request-headers") {
+            if let Ok(v) = acrh.to_str() {
+                params.insert("HTTP_ACCESS_CONTROL_REQUEST_HEADERS", v);
+            }
+        }
 
         if let Some(h) = headers.get("x-csrf-token") {
             if let Ok(v) = h.to_str() {
@@ -194,6 +204,13 @@ impl PhpFpm {
         if let Some(h) = headers.get("x-requested-with") {
             if let Ok(v) = h.to_str() {
                 params.insert("HTTP_X_REQUESTED_WITH", v);
+            }
+        }
+
+        if let Some(auth) = headers.get("authorization") {
+            if let Ok(v) = auth.to_str() {
+                params.insert("HTTP_AUTHORIZATION", v);
+                params.insert("REDIRECT_HTTP_AUTHORIZATION", v);
             }
         }
 

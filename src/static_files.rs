@@ -354,4 +354,15 @@ pub fn add_security_headers(headers: &mut HeaderMap, custom_headers: &[(String, 
             headers.insert(header_name, header_value);
         }
     }
+
+    let powered_value = format!(
+        "crucible v{} (c) Altare Technologies Limited",
+        env!("CARGO_PKG_VERSION")
+    );
+    if let (Ok(header_name), Ok(header_value)) = (
+        hyper::header::HeaderName::from_bytes(b"x-powered-by"),
+        hyper::header::HeaderValue::from_str(&powered_value),
+    ) {
+        headers.insert(header_name, header_value);
+    }
 }
