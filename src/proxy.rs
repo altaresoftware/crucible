@@ -355,7 +355,7 @@ impl ProxyHandler {
             }
 
             // Try serving static file
-            if let Some(mut response) = static_server.serve(&path, &method).await {
+            if let Some(mut response) = static_server.serve(&path, &method, req.headers()).await {
                 // Add custom headers
                 if let Some(config) = domain_config {
                     let headers_vec: Vec<(String, String)> = config
@@ -429,7 +429,7 @@ impl ProxyHandler {
         let headers = req.headers().clone();
         let method = req.method().clone();
 
-        let body_bytes = if method == Method::POST || method == Method::PUT {
+        let body_bytes = if method != Method::GET && method != Method::HEAD {
             Some(req.collect().await?.to_bytes().to_vec())
         } else {
             None
@@ -489,7 +489,7 @@ impl ProxyHandler {
         let headers = req.headers().clone();
         let method = req.method().clone();
 
-        let body_bytes = if method == Method::POST || method == Method::PUT {
+        let body_bytes = if method != Method::GET && method != Method::HEAD {
             Some(req.collect().await?.to_bytes().to_vec())
         } else {
             None

@@ -7,6 +7,7 @@ use hyper::body::Bytes;
 use hyper::{HeaderMap, Method, Response, StatusCode};
 use std::path::{Path, PathBuf};
 use tokio::fs;
+ 
 use tracing::{debug, warn};
 
 /// Static file server
@@ -28,6 +29,7 @@ impl StaticFileServer {
         &self,
         path: &str,
         method: &Method,
+        req_headers: &HeaderMap,
     ) -> Option<Response<BoxBody<Bytes, hyper::Error>>> {
         // Only handle GET and HEAD requests
         if method != Method::GET && method != Method::HEAD {
@@ -48,14 +50,14 @@ impl StaticFileServer {
             for index_file in &self.index_files {
                 let index_path = file_path.join(index_file);
                 if index_path.exists() {
-                    return self.serve_file(&index_path, method).await;
+                    return self.serve_file(&index_path, method, req_headers).await;
                 }
             }
             return None;
         }
 
         // Serve the file
-        self.serve_file(&file_path, method).await
+        self.serve_file(&file_path, method, req_headers).await
     }
 
     /// Resolve and sanitize path
@@ -96,6 +98,7 @@ impl StaticFileServer {
         &self,
         path: &Path,
         method: &Method,
+        req_headers: &HeaderMap,
     ) -> Option<Response<BoxBody<Bytes, hyper::Error>>> {
         // Check if it's a PHP file - should be handled by PHP-FPM
         if path.extension().and_then(|e| e.to_str()) == Some("php") {
@@ -104,19 +107,133 @@ impl StaticFileServer {
 
         debug!("Serving static file: {:?}", path);
 
-        // Read file content
-        let content = match fs::read(path).await {
-            Ok(c) => c,
+        // Determine if we can serve precompressed
+        let accept_enc = req_headers
+            .get("accept-encoding")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        let wants_br = accept_enc.contains("br");
+        let wants_gzip = accept_enc.contains("gzip");
+
+        let mut served_path = path.to_path_buf();
+        let mut content_encoding: Option<&'static str> = None;
+        if wants_br {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                let candidate = path.with_file_name(format!("{}.br", fname));
+                if candidate.exists() {
+                    served_path = candidate;
+                    content_encoding = Some("br");
+                }
+            }
+        }
+        if content_encoding.is_none() && wants_gzip {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                let candidate = path.with_file_name(format!("{}.gz", fname));
+                if candidate.exists() {
+                    served_path = candidate;
+                    content_encoding = Some("gzip");
+                }
+            }
+        }
+
+        // Stat for caching headers (based on served file)
+        let metadata = match fs::metadata(&served_path).await {
+            Ok(m) => m,
             Err(e) => {
-                warn!("Failed to read file {:?}: {}", path, e);
+                warn!("Failed to stat file {:?}: {}", path, e);
                 return None;
             }
         };
+        let len = metadata.len();
+        #[allow(deprecated)]
+        let mtime = metadata.modified().ok();
+        let (etag_value, last_modified_value) = if let Some(mtime) = mtime {
+            let secs = mtime
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let etag = format!("\"{}-{}\"", len, secs);
+            let last_mod = httpdate::fmt_http_date(mtime);
+            (Some(etag), Some(last_mod))
+        } else {
+            (None, None)
+        };
 
-        // Determine content type
+        // Conditional requests: If-None-Match / If-Modified-Since
+        if method == Method::GET || method == Method::HEAD {
+            if let Some(etag) = &etag_value {
+                if let Some(inm) = req_headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+                    if inm.split(',').any(|t| t.trim() == etag) {
+                        let mut resp = Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .body(
+                                Empty::<Bytes>::new()
+                                    .map_err(|never| match never {})
+                                    .boxed(),
+                            )
+                            .unwrap();
+                        resp.headers_mut().insert(
+                            "ETag",
+                            hyper::header::HeaderValue::from_str(etag).ok()?,
+                        );
+                        if let Some(lm) = &last_modified_value {
+                            resp.headers_mut().insert(
+                                "Last-Modified",
+                                hyper::header::HeaderValue::from_str(lm).ok()?,
+                            );
+                        }
+                        return Some(resp);
+                    }
+                }
+            }
+            if let Some(lm) = &last_modified_value {
+                if let Some(ims) = req_headers.get("if-modified-since").and_then(|v| v.to_str().ok()) {
+                    if let Ok(ims_time) = httpdate::parse_http_date(ims) {
+                        if let Some(mtime) = metadata.modified().ok() {
+                            if mtime <= ims_time {
+                                let mut resp = Response::builder()
+                                    .status(StatusCode::NOT_MODIFIED)
+                                    .body(
+                                        Empty::<Bytes>::new()
+                                            .map_err(|never| match never {})
+                                            .boxed(),
+                                    )
+                                    .unwrap();
+                                resp.headers_mut().insert(
+                                    "Last-Modified",
+                                    hyper::header::HeaderValue::from_str(lm).ok()?,
+                                );
+                                if let Some(et) = &etag_value {
+                                    resp.headers_mut().insert(
+                                        "ETag",
+                                        hyper::header::HeaderValue::from_str(et).ok()?,
+                                    );
+                                }
+                                return Some(resp);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Determine content type from original path (not compressed extension)
         let content_type = get_content_type(path);
 
-        // For HEAD requests, return empty body
+        // Read file content
+        let content = if method == Method::HEAD {
+            Vec::new()
+        } else {
+            match fs::read(&served_path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to read file {:?}: {}", served_path, e);
+                    return None;
+                }
+            }
+        };
+
+        // Build body
         let body = if method == Method::HEAD {
             Empty::<Bytes>::new()
                 .map_err(|never| match never {})
@@ -127,12 +244,32 @@ impl StaticFileServer {
                 .boxed()
         };
 
-        let response = Response::builder()
+        let mut response = Response::builder()
             .status(StatusCode::OK)
             .header("Content-Type", content_type)
             .header("Cache-Control", "public, max-age=3600")
             .body(body)
             .unwrap();
+        if let Some(enc) = content_encoding {
+            response
+                .headers_mut()
+                .insert("Content-Encoding", hyper::header::HeaderValue::from_static(enc));
+            response
+                .headers_mut()
+                .insert("Vary", hyper::header::HeaderValue::from_static("Accept-Encoding"));
+        }
+        if let Some(et) = etag_value {
+            response.headers_mut().insert(
+                "ETag",
+                hyper::header::HeaderValue::from_str(&et).unwrap_or(hyper::header::HeaderValue::from_static("")),
+            );
+        }
+        if let Some(lm) = last_modified_value {
+            response.headers_mut().insert(
+                "Last-Modified",
+                hyper::header::HeaderValue::from_str(&lm).unwrap_or(hyper::header::HeaderValue::from_static("")),
+            );
+        }
 
         Some(response)
     }

@@ -85,8 +85,18 @@ impl PhpFpm {
             request_uri
         };
         params.insert("SCRIPT_NAME", script_name);
-        params.insert("REQUEST_URI", request_uri);
+        let request_uri_full_owned = if query_string.is_empty() {
+            request_uri.to_string()
+        } else {
+            let mut s = String::with_capacity(request_uri.len() + 1 + query_string.len());
+            s.push_str(request_uri);
+            s.push('?');
+            s.push_str(query_string);
+            s
+        };
+        params.insert("REQUEST_URI", &request_uri_full_owned);
         params.insert("DOCUMENT_URI", request_uri);
+        params.insert("PHP_SELF", script_name);
         params.insert("DOCUMENT_ROOT", self.script_filename_prefix.as_str());
         params.insert("SERVER_PROTOCOL", "HTTP/1.1");
         params.insert("REDIRECT_STATUS", "200");
@@ -118,6 +128,7 @@ impl PhpFpm {
         params.insert("REMOTE_ADDR", client_ip);
         if is_https {
             params.insert("HTTPS", "on");
+            params.insert("HTTP_X_FORWARDED_SSL", "on");
         }
         request_scheme_owned = if is_https { "https".to_string() } else { "http".to_string() };
         params.insert("REQUEST_SCHEME", &request_scheme_owned);
@@ -167,6 +178,22 @@ impl PhpFpm {
         if let Some(origin) = headers.get("origin") {
             if let Ok(v) = origin.to_str() {
                 params.insert("HTTP_ORIGIN", v);
+            }
+        }
+
+        if let Some(h) = headers.get("x-csrf-token") {
+            if let Ok(v) = h.to_str() {
+                params.insert("HTTP_X_CSRF_TOKEN", v);
+            }
+        }
+        if let Some(h) = headers.get("x-xsrf-token") {
+            if let Ok(v) = h.to_str() {
+                params.insert("HTTP_X_XSRF_TOKEN", v);
+            }
+        }
+        if let Some(h) = headers.get("x-requested-with") {
+            if let Ok(v) = h.to_str() {
+                params.insert("HTTP_X_REQUESTED_WITH", v);
             }
         }
 

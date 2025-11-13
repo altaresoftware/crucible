@@ -162,13 +162,14 @@ async fn start_http_server(port: u16, proxy_handler: Arc<ProxyHandler>) -> Resul
     info!("HTTP server listening on {}", addr);
 
     loop {
-        let (stream, client_addr) = match listener.accept().await {
+        let (mut stream, client_addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to accept connection: {}", e);
                 continue;
             }
         };
+        let _ = stream.set_nodelay(true);
 
         let io = TokioIo::new(stream);
         let proxy_handler = proxy_handler.clone();
@@ -207,13 +208,14 @@ async fn start_https_server(
     info!("HTTPS server listening on {}", addr);
 
     loop {
-        let (stream, client_addr) = match listener.accept().await {
+        let (mut stream, client_addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to accept connection: {}", e);
                 continue;
             }
         };
+        let _ = stream.set_nodelay(true);
 
         let proxy_handler = proxy_handler.clone();
         let ssl_manager = ssl_manager.clone();
