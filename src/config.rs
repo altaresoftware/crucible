@@ -1,6 +1,9 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 
 use anyhow::{Context, Result};
+use crate::security::{
+    RateLimitConfig, RequestLimits, SecurityConfig, SlowRequestConfig, TlsAnomalyConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
@@ -37,6 +40,10 @@ pub struct ServerConfig {
     /// Maximum concurrent connections per backend (default: 1024)
     #[serde(default = "default_max_connections")]
     pub max_connections_per_backend: usize,
+
+    /// Altare Flux security configuration
+    #[serde(default)]
+    pub security: SecurityConfigWrapper,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,6 +112,7 @@ impl Default for ServerConfig {
             workers: None,
             timeout: default_timeout(),
             max_connections_per_backend: default_max_connections(),
+            security: SecurityConfigWrapper::default(),
         }
     }
 }
@@ -166,6 +174,209 @@ fn default_health_check_timeout() -> u64 {
 
 fn default_health_check_path() -> String {
     "/".to_string()
+}
+
+/// Wrapper for SecurityConfig to allow YAML deserialization
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SecurityConfigWrapper {
+    /// Enable Altare Flux security system
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Rate limiting configuration
+    #[serde(default)]
+    pub rate_limit: RateLimitConfigWrapper,
+
+    /// Request size limits
+    #[serde(default)]
+    pub request_limits: RequestLimitsWrapper,
+
+    /// Slow request protection
+    #[serde(default)]
+    pub slow_request_protection: SlowRequestConfigWrapper,
+
+    /// TLS handshake anomaly detection
+    #[serde(default)]
+    pub tls_anomaly_detection: TlsAnomalyConfigWrapper,
+
+    /// Block Tor exit nodes
+    #[serde(default = "default_true")]
+    pub block_tor: bool,
+
+    /// Block known bot/proxy IPs
+    #[serde(default = "default_true")]
+    pub block_bots: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RateLimitConfigWrapper {
+    #[serde(default = "default_rate_limit_rps")]
+    pub default_rps: u32,
+
+    #[serde(default = "default_api_rate_limit_rps")]
+    pub api_rps: u32,
+
+    #[serde(default = "default_rate_limit_window")]
+    pub window_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RequestLimitsWrapper {
+    #[serde(default = "default_max_header_size")]
+    pub max_header_size: usize,
+
+    #[serde(default = "default_max_body_size")]
+    pub max_body_size: usize,
+
+    #[serde(default = "default_max_url_length")]
+    pub max_url_length: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SlowRequestConfigWrapper {
+    #[serde(default = "default_min_header_rate")]
+    pub min_header_rate: usize,
+
+    #[serde(default = "default_min_body_rate")]
+    pub min_body_rate: usize,
+
+    #[serde(default = "default_slow_timeout")]
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TlsAnomalyConfigWrapper {
+    #[serde(default = "default_max_failed_handshakes")]
+    pub max_failed_handshakes: u32,
+
+    #[serde(default = "default_tls_window")]
+    pub window_seconds: u64,
+}
+
+impl Default for SecurityConfigWrapper {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rate_limit: RateLimitConfigWrapper::default(),
+            request_limits: RequestLimitsWrapper::default(),
+            slow_request_protection: SlowRequestConfigWrapper::default(),
+            tls_anomaly_detection: TlsAnomalyConfigWrapper::default(),
+            block_tor: true,
+            block_bots: true,
+        }
+    }
+}
+
+impl Default for RateLimitConfigWrapper {
+    fn default() -> Self {
+        Self {
+            default_rps: default_rate_limit_rps(),
+            api_rps: default_api_rate_limit_rps(),
+            window_seconds: default_rate_limit_window(),
+        }
+    }
+}
+
+impl Default for RequestLimitsWrapper {
+    fn default() -> Self {
+        Self {
+            max_header_size: default_max_header_size(),
+            max_body_size: default_max_body_size(),
+            max_url_length: default_max_url_length(),
+        }
+    }
+}
+
+impl Default for SlowRequestConfigWrapper {
+    fn default() -> Self {
+        Self {
+            min_header_rate: default_min_header_rate(),
+            min_body_rate: default_min_body_rate(),
+            timeout_seconds: default_slow_timeout(),
+        }
+    }
+}
+
+impl Default for TlsAnomalyConfigWrapper {
+    fn default() -> Self {
+        Self {
+            max_failed_handshakes: default_max_failed_handshakes(),
+            window_seconds: default_tls_window(),
+        }
+    }
+}
+
+impl From<SecurityConfigWrapper> for SecurityConfig {
+    fn from(wrapper: SecurityConfigWrapper) -> Self {
+        Self {
+            enabled: wrapper.enabled,
+            rate_limit: RateLimitConfig {
+                default_rps: wrapper.rate_limit.default_rps,
+                api_rps: wrapper.rate_limit.api_rps,
+                window_seconds: wrapper.rate_limit.window_seconds,
+            },
+            request_limits: RequestLimits {
+                max_header_size: wrapper.request_limits.max_header_size,
+                max_body_size: wrapper.request_limits.max_body_size,
+                max_url_length: wrapper.request_limits.max_url_length,
+            },
+            slow_request_protection: SlowRequestConfig {
+                min_header_rate: wrapper.slow_request_protection.min_header_rate,
+                min_body_rate: wrapper.slow_request_protection.min_body_rate,
+                timeout_seconds: wrapper.slow_request_protection.timeout_seconds,
+            },
+            tls_anomaly_detection: TlsAnomalyConfig {
+                max_failed_handshakes: wrapper.tls_anomaly_detection.max_failed_handshakes,
+                window_seconds: wrapper.tls_anomaly_detection.window_seconds,
+            },
+            block_tor: wrapper.block_tor,
+            block_bots: wrapper.block_bots,
+        }
+    }
+}
+
+fn default_rate_limit_rps() -> u32 {
+    20
+}
+
+fn default_api_rate_limit_rps() -> u32 {
+    100
+}
+
+fn default_rate_limit_window() -> u64 {
+    1
+}
+
+fn default_max_header_size() -> usize {
+    16384 // 16KB
+}
+
+fn default_max_body_size() -> usize {
+    10485760 // 10MB
+}
+
+fn default_max_url_length() -> usize {
+    2048
+}
+
+fn default_min_header_rate() -> usize {
+    1024 // 1KB/s
+}
+
+fn default_min_body_rate() -> usize {
+    10240 // 10KB/s
+}
+
+fn default_slow_timeout() -> u64 {
+    30
+}
+
+fn default_max_failed_handshakes() -> u32 {
+    5
+}
+
+fn default_tls_window() -> u64 {
+    60
 }
 
 impl Config {

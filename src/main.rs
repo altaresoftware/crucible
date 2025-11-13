@@ -1,15 +1,18 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 
 mod config;
+mod error_pages;
 mod health;
 mod load_balancer;
 mod proxy;
+mod security;
 mod ssl;
 
 use crate::config::Config;
 use crate::health::initialize_health_checks;
 use crate::load_balancer::{LoadBalancer, LoadBalancerManager};
 use crate::proxy::{handle_connection, ProxyHandler};
+use crate::security::AltareFlux;
 use crate::ssl::SslManager;
 use hyper::service::service_fn;
 use anyhow::{Context, Result};
@@ -95,9 +98,20 @@ async fn main() -> Result<()> {
     info!("Initializing health checks...");
     initialize_health_checks(lb_manager.clone()).await;
 
+    // Initialize Altare Flux security system
+    info!("Initializing Altare Flux security system...");
+    let security_config = config.server.security.clone().into();
+    let security = Arc::new(AltareFlux::new(security_config));
+
+    if let Err(e) = security.initialize().await {
+        warn!("Failed to fully initialize security system: {}", e);
+        info!("Security system will continue with degraded functionality");
+    }
+
     // Create proxy handler
     let proxy_handler = Arc::new(ProxyHandler::new(
         lb_manager.clone(),
+        security.clone(),
         config.server.timeout,
     ));
 
@@ -118,7 +132,7 @@ async fn main() -> Result<()> {
         info!("Starting HTTPS server on port {}", https_port);
         info!("SSL configured for domains: {:?}", ssl_domains);
 
-        if let Err(e) = start_https_server(https_port, proxy_handler, ssl_manager).await {
+        if let Err(e) = start_https_server(https_port, proxy_handler, ssl_manager, security).await {
             error!("HTTPS server error: {}", e);
         }
     } else {
@@ -179,6 +193,7 @@ async fn start_https_server(
     port: u16,
     proxy_handler: Arc<ProxyHandler>,
     ssl_manager: Arc<SslManager>,
+    security: Arc<AltareFlux>,
 ) -> Result<()> {
     let addr = format!("0.0.0.0:{}", port);
     let listener = TcpListener::bind(&addr)
@@ -198,6 +213,7 @@ async fn start_https_server(
 
         let proxy_handler = proxy_handler.clone();
         let ssl_manager = ssl_manager.clone();
+        let security = security.clone();
 
         tokio::task::spawn(async move {
             // For simplicity, we'll use the first available acceptor
@@ -210,6 +226,8 @@ async fn start_https_server(
                 Ok(s) => s,
                 Err(e) => {
                     warn!("TLS handshake failed from {}: {}", client_addr, e);
+                    // Record failed TLS handshake for security monitoring
+                    security.record_failed_tls_handshake(client_addr.ip()).await;
                     return;
                 }
             };

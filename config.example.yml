@@ -18,6 +18,58 @@ server:
   # Maximum concurrent connections per backend (default: 1024)
   max_connections_per_backend: 1024
 
+  # Altare Flux Security System Configuration
+  security:
+    # Enable security features (default: true)
+    enabled: true
+
+    # Block Tor exit nodes (default: true)
+    block_tor: true
+
+    # Block known bot/proxy IPs (default: true)
+    block_bots: true
+
+    # Rate limiting configuration
+    rate_limit:
+      # Default requests per second per IP (default: 20)
+      default_rps: 20
+
+      # API requests per second per IP (higher limit for /api/* routes) (default: 100)
+      api_rps: 100
+
+      # Time window in seconds (default: 1)
+      window_seconds: 1
+
+    # Request size limits
+    request_limits:
+      # Maximum header size in bytes (default: 16384 = 16KB)
+      max_header_size: 16384
+
+      # Maximum body size in bytes (default: 10485760 = 10MB)
+      max_body_size: 10485760
+
+      # Maximum URL length (default: 2048)
+      max_url_length: 2048
+
+    # Slow request protection (Slowloris defense)
+    slow_request_protection:
+      # Minimum bytes per second for headers (default: 1024)
+      min_header_rate: 1024
+
+      # Minimum bytes per second for body (default: 10240)
+      min_body_rate: 10240
+
+      # Timeout for slow requests in seconds (default: 30)
+      timeout_seconds: 30
+
+    # TLS handshake anomaly detection
+    tls_anomaly_detection:
+      # Maximum failed handshakes before blocking (default: 5)
+      max_failed_handshakes: 5
+
+      # Time window in seconds (default: 60)
+      window_seconds: 60
+
 # Domain configurations
 domains:
   # Example domain with SSL enabled
