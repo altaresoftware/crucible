@@ -49,9 +49,17 @@ impl PhpFpm {
             .await
             .context("Failed to connect to PHP-FPM")?;
 
-        let script_filename = script_path
+        let script_filename_str = script_path
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("Invalid script path"))?;
+        let script_path_obj = Path::new(script_filename_str);
+        let script_filename_owned = if script_path_obj.is_absolute() {
+            script_filename_str.to_string()
+        } else {
+            let mut combined = std::path::PathBuf::from(&self.script_filename_prefix);
+            combined.push(script_filename_str);
+            combined.to_string_lossy().to_string()
+        };
 
         // Build FastCGI parameters
         // We need to store owned Strings for dynamic values
@@ -62,10 +70,16 @@ impl PhpFpm {
         params.insert("SERVER_SOFTWARE", "Crucible/1.0.0");
         params.insert("QUERY_STRING", query_string);
         params.insert("REQUEST_METHOD", method);
-        params.insert("SCRIPT_FILENAME", script_filename);
-        params.insert("SCRIPT_NAME", request_uri);
+        params.insert("SCRIPT_FILENAME", &script_filename_owned);
+        let script_name = if script_filename_owned.ends_with("index.php") {
+            "/index.php"
+        } else {
+            request_uri
+        };
+        params.insert("SCRIPT_NAME", script_name);
         params.insert("REQUEST_URI", request_uri);
         params.insert("DOCUMENT_URI", request_uri);
+        params.insert("DOCUMENT_ROOT", self.script_filename_prefix.as_str());
         params.insert("SERVER_PROTOCOL", "HTTP/1.1");
         params.insert("REDIRECT_STATUS", "200");
 

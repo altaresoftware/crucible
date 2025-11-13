@@ -162,8 +162,10 @@ impl StaticFileServer {
             }
 
             if let Some(resolved) = self.resolve_path(&test_path) {
-                if resolved.exists() {
-                    return Some(resolved);
+                if let Ok(metadata) = fs::metadata(&resolved).await {
+                    if metadata.is_file() {
+                        return Some(resolved);
+                    }
                 }
             }
         }

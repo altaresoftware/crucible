@@ -358,10 +358,47 @@ impl ProxyHandler {
                 }
                 return Ok(response);
             }
+
+            
+            if let Some(config) = domain_config {
+                if let Some(static_cfg) = &config.static_files {
+                    if !static_cfg.try_files.is_empty() {
+                        if let Some(resolved) = static_server
+                            .try_files(&path, &static_cfg.try_files)
+                            .await
+                        {
+                            if resolved.extension().and_then(|e| e.to_str()) == Some("php") {
+                                if let Some(php_handler) = self.php_handlers.get(&host) {
+                                    return self
+                                        .handle_php_request_with_uri(
+                                            req,
+                                            php_handler,
+                                            "/index.php",
+                                            &path,
+                                            &query,
+                                            domain_config,
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Fall back to backend proxying
-        self.handle_backend_proxy(req, &host, &path, client_addr, domain_config)
+        // If no backends are configured for this domain, return 404
+        if domain_config.map(|c| c.backends.is_empty()).unwrap_or(true) {
+            return Ok(create_error_response(
+                StatusCode::NOT_FOUND,
+                "Not found",
+                &path,
+            ));
+        }
+
+        self
+            .handle_backend_proxy(req, &host, &path, client_addr, domain_config)
             .await
     }
 
@@ -379,14 +416,12 @@ impl ProxyHandler {
         let headers = req.headers().clone();
         let method = req.method().clone();
 
-        // Collect body if present
         let body_bytes = if method == Method::POST || method == Method::PUT {
             Some(req.collect().await?.to_bytes().to_vec())
         } else {
             None
         };
 
-        // Resolve script path
         let script_path = std::path::PathBuf::from(path.trim_start_matches('/'));
 
         match php_handler
@@ -394,7 +429,6 @@ impl ProxyHandler {
             .await
         {
             Ok(mut response) => {
-                // Add custom headers
                 if let Some(config) = domain_config {
                     let headers_vec: Vec<(String, String)> = config
                         .headers
@@ -411,6 +445,55 @@ impl ProxyHandler {
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "PHP execution failed",
                     path,
+                ))
+            }
+        }
+    }
+
+    async fn handle_php_request_with_uri(
+        &self,
+        req: Request<Incoming>,
+        php_handler: &PhpFpm,
+        script_path: &str,
+        request_uri: &str,
+        query: &str,
+        domain_config: Option<&DomainConfig>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        debug!("Handling PHP request: {} -> {}", request_uri, script_path);
+
+        let method_str = req.method().as_str().to_string();
+        let headers = req.headers().clone();
+        let method = req.method().clone();
+
+        let body_bytes = if method == Method::POST || method == Method::PUT {
+            Some(req.collect().await?.to_bytes().to_vec())
+        } else {
+            None
+        };
+
+        let script_path_buf = std::path::PathBuf::from(script_path.trim_start_matches('/'));
+
+        match php_handler
+            .execute(&script_path_buf, request_uri, query, &method_str, &headers, body_bytes)
+            .await
+        {
+            Ok(mut response) => {
+                if let Some(config) = domain_config {
+                    let headers_vec: Vec<(String, String)> = config
+                        .headers
+                        .iter()
+                        .map(|h| (h.name.clone(), h.value.clone()))
+                        .collect();
+                    add_security_headers(response.headers_mut(), &headers_vec);
+                }
+                Ok(response)
+            }
+            Err(e) => {
+                error!("PHP execution error: {}", e);
+                Ok(create_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "PHP execution failed",
+                    request_uri,
                 ))
             }
         }
