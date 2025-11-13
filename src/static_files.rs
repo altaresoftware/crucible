@@ -1,10 +1,6 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 //
 // Static file server implementation
-// Note: This module is complete but not yet fully integrated into the proxy handler.
-// It will be enabled once the integration is complete.
-
-#![allow(dead_code)]
 
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::Bytes;

@@ -1,10 +1,6 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 //
 // PHP-FPM FastCGI implementation
-// Note: This module is complete but not yet fully integrated into the proxy handler.
-// It will be enabled once the integration is complete.
-
-#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use http_body_util::{combinators::BoxBody, BodyExt, Full};

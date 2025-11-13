@@ -177,7 +177,7 @@ async fn start_http_server(port: u16, proxy_handler: Arc<ProxyHandler>) -> Resul
             let service = service_fn(move |req| {
                 let proxy_handler = proxy_handler.clone();
                 async move {
-                    handle_connection(proxy_handler, client_addr, req).await
+                    handle_connection(proxy_handler, client_addr, req, false).await
                 }
             });
 
@@ -239,7 +239,7 @@ async fn start_https_server(
             let service = service_fn(move |req| {
                 let proxy_handler = proxy_handler.clone();
                 async move {
-                    handle_connection(proxy_handler, client_addr, req).await
+                    handle_connection(proxy_handler, client_addr, req, true).await
                 }
             });
 
