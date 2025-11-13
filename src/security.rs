@@ -299,6 +299,11 @@ impl AltareFlux {
             return Ok(());
         }
 
+        // Skip rate limiting for loopback during local development
+        if ip.is_loopback() {
+            return Ok(());
+        }
+
         let now = Instant::now();
         let window = Duration::from_secs(self.config.rate_limit.window_seconds);
         let limit = if is_api {

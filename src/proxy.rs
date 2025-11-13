@@ -18,7 +18,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
+use tokio::io::copy_bidirectional;
 use tracing::{debug, error, warn};
+use hyper::upgrade;
 
 /// Main proxy handler
 pub struct ProxyHandler {
@@ -28,6 +30,165 @@ pub struct ProxyHandler {
     domain_configs: Arc<HashMap<String, DomainConfig>>,
     static_servers: Arc<HashMap<String, StaticFileServer>>,
     php_handlers: Arc<HashMap<String, PhpFpm>>,
+}
+
+impl ProxyHandler {
+    /// Proxy a WebSocket upgrade request end-to-end and tunnel frames
+    async fn handle_ws_proxy(
+        &self,
+        mut req: Request<Incoming>,
+        host: &str,
+        client_addr: SocketAddr,
+        domain_config: Option<&DomainConfig>,
+    ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        // Select backend for this domain
+        let lb = match self.lb_manager.get_balancer(host).await {
+            Some(lb) => lb,
+            None => {
+                warn!("No backend configured for host: {}", host);
+                return Ok(create_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "No backend available",
+                    req.uri().path(),
+                ));
+            }
+        };
+        let client_ip_str = client_addr.ip().to_string();
+        let backend = match lb.select_backend(Some(&client_ip_str)) {
+            Some(b) => b,
+            None => {
+                error!("No healthy backend available for host: {}", host);
+                return Ok(create_error_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "No healthy backend available",
+                    req.uri().path(),
+                ));
+            }
+        };
+        debug!("WS: selected backend {} for host {}", backend.url, host);
+
+        // Parse backend origin
+        let backend_uri: Uri = backend.url.parse()?;
+        let backend_host = backend_uri.host().unwrap_or("localhost");
+        let backend_port = backend_uri.port_u16().unwrap_or(80);
+
+        // Prepare client upgrade future before responding
+        let on_client_upgrade = upgrade::on(&mut req);
+
+        // Build origin-form path-and-query
+        let path = req.uri().path();
+        let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+        let path_and_query = format!("{}{}", path, query);
+
+        // Connect to backend and create HTTP/1 client
+        let backend_addr = format!("{}:{}", backend_host, backend_port);
+        let stream = timeout(self.timeout, TcpStream::connect(&backend_addr))
+            .await
+            .map_err(|_| anyhow::anyhow!("Connection timeout"))?
+            .map_err(|e| anyhow::anyhow!("Connection failed: {}", e))?;
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = http1::handshake(io).await?;
+        tokio::task::spawn(async move {
+            if let Err(err) = conn.await {
+                error!("WS backend connection error: {:?}", err);
+            }
+        });
+
+        // Build backend upgrade request: copy headers and set Host to backend
+        let mut backend_req = Request::builder()
+            .method(req.method().clone())
+            .uri(path_and_query.as_str())
+            .body(Empty::<Bytes>::new())
+            .unwrap();
+        for (name, value) in req.headers().iter() {
+            backend_req.headers_mut().insert(name.clone(), value.clone());
+        }
+        // Ensure correct Host header
+        let host_header = format!("{}:{}", backend_host, backend_port);
+        backend_req
+            .headers_mut()
+            .insert("Host", host_header.parse().unwrap());
+
+        // Send upgrade request to backend
+        let mut backend_resp = match timeout(self.timeout, sender.send_request(backend_req)).await {
+            Ok(Ok(resp)) => resp,
+            _ => {
+                backend.set_healthy(false);
+                return Ok(create_error_response(
+                    StatusCode::BAD_GATEWAY,
+                    "Backend connection failed",
+                    path,
+                ));
+            }
+        };
+
+        if backend_resp.status() != StatusCode::SWITCHING_PROTOCOLS {
+            // Not an upgrade after all; forward response as normal
+            let (parts, body) = backend_resp.into_parts();
+            let body = body.boxed();
+            let mut resp = Response::from_parts(parts, body);
+            if let Some(config) = domain_config {
+                let headers_vec: Vec<(String, String)> = config
+                    .headers
+                    .iter()
+                    .map(|h| (h.name.clone(), h.value.clone()))
+                    .collect();
+                add_security_headers(resp.headers_mut(), &headers_vec);
+            }
+            return Ok(resp);
+        }
+
+        // Prepare backend upgrade
+        let on_backend_upgrade = upgrade::on(&mut backend_resp);
+
+        // Build 101 Switching Protocols response for client using required headers
+        let mut builder = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
+        for (name, value) in backend_resp.headers().iter() {
+            builder = builder.header(name, value.clone());
+        }
+        let client_response = builder
+            .body(
+                Empty::<Bytes>::new()
+                    .map_err(|never| match never {})
+                    .boxed(),
+            )
+            .unwrap();
+
+        // Tunnel data bidirectionally between client and backend
+        tokio::spawn(async move {
+            match (on_client_upgrade.await, on_backend_upgrade.await) {
+                (Ok(client_up), Ok(backend_up)) => {
+                    let mut client_io = TokioIo::new(client_up);
+                    let mut backend_io = TokioIo::new(backend_up);
+                    let _ = copy_bidirectional(&mut client_io, &mut backend_io).await;
+                }
+                _ => {}
+            }
+        });
+
+        Ok(client_response)
+    }
+}
+
+/// Determine if the incoming request is a WebSocket upgrade
+fn is_ws_upgrade(req: &Request<Incoming>) -> bool {
+    let has_upgrade_header = req
+        .headers()
+        .get("upgrade")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+
+    let has_connection_upgrade = req
+        .headers()
+        .get("connection")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s
+            .split(',')
+            .any(|p| p.trim().eq_ignore_ascii_case("upgrade")))
+        .unwrap_or(false);
+
+    has_upgrade_header && has_connection_upgrade
 }
 
 impl ProxyHandler {
@@ -103,6 +264,13 @@ impl ProxyHandler {
         };
 
         let domain_config = self.domain_configs.get(&host);
+
+        // Handle WebSocket upgrades early (avoid rate-limit loops on HMR reconnects)
+        if is_ws_upgrade(&req) {
+            return self
+                .handle_ws_proxy(req, &host, client_addr, domain_config)
+                .await;
+        }
 
         // Handle HTTP to HTTPS redirect
         if !is_https && domain_config.map(|c| c.redirect_to_https).unwrap_or(false) {
@@ -314,7 +482,6 @@ impl ProxyHandler {
         }
     }
 
-    /// Proxy a request to the backend
     async fn proxy_request(
         &self,
         mut req: Request<Incoming>,
@@ -325,22 +492,19 @@ impl ProxyHandler {
         let backend_host = backend_uri.host().unwrap_or("localhost");
         let backend_port = backend_uri.port_u16().unwrap_or(80);
 
-        // Build new URI with backend information
+        // Build origin-form path-and-query for the request-target
         let path = req.uri().path();
-        let query = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
-        let new_uri = format!(
-            "{}://{}:{}{}{}",
-            backend_uri.scheme_str().unwrap_or("http"),
-            backend_host,
-            backend_port,
-            path,
-            query
-        )
-        .parse::<Uri>()?;
+        let query = req
+            .uri()
+            .query()
+            .map(|q| format!("?{}", q))
+            .unwrap_or_default();
+        let path_and_query = format!("{}{}", path, query).parse::<Uri>()?;
+        *req.uri_mut() = path_and_query;
 
-        *req.uri_mut() = new_uri;
-
-        // Update headers
+        // Ensure Host header targets the backend origin
+        let host_header = format!("{}:{}", backend_host, backend_port);
+        req.headers_mut().insert("Host", host_header.parse()?);
         req.headers_mut()
             .insert("X-Forwarded-For", "client".parse()?);
         req.headers_mut()
@@ -375,6 +539,7 @@ impl ProxyHandler {
         let body = body.boxed();
         Ok(Response::from_parts(parts, body))
     }
+
 }
 
 /// Extract host from request
@@ -386,11 +551,7 @@ fn extract_host(req: &Request<Incoming>) -> Option<String> {
             // Remove port if present
             h.split(':').next().unwrap_or(h).to_string()
         })
-        .or_else(|| {
-            req.uri()
-                .host()
-                .map(|h| h.to_string())
-        })
+        .or_else(|| req.uri().host().map(|h| h.to_string()))
 }
 
 /// Estimate header size for security checks
@@ -501,14 +662,26 @@ pub async fn health_check_backend(backend_url: &str, path: &str, timeout_secs: u
                 let _ = conn.await;
             });
 
+            // Use origin-form for the request-target and set Host header
+            let path_and_query = uri
+                .path_and_query()
+                .map(|pq| pq.as_str())
+                .unwrap_or("/");
+            let host_header = if let Some(p) = uri.port_u16() {
+                format!("{}:{}", host, p)
+            } else {
+                host.to_string()
+            };
             let req = Request::builder()
                 .method(Method::GET)
-                .uri(uri)
+                .uri(path_and_query)
+                .header("Host", host_header)
                 .body(Empty::<Bytes>::new())
                 .unwrap();
 
             match timeout(Duration::from_secs(timeout_secs), sender.send_request(req)).await {
-                Ok(Ok(response)) => response.status().is_success(),
+                // any HTTP response counts as healthy
+                Ok(Ok(_response)) => true,
                 _ => false,
             }
         }

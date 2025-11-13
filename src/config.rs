@@ -387,7 +387,7 @@ impl From<SecurityConfigWrapper> for SecurityConfig {
 }
 
 fn default_rate_limit_rps() -> u32 {
-    20
+    50
 }
 
 fn default_api_rate_limit_rps() -> u32 {

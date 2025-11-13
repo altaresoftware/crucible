@@ -183,6 +183,7 @@ async fn start_http_server(port: u16, proxy_handler: Arc<ProxyHandler>) -> Resul
 
             if let Err(err) = http1::Builder::new()
                 .serve_connection(io, service)
+                .with_upgrades()
                 .await
             {
                 error!("Error serving connection from {}: {:?}", client_addr, err);
@@ -245,6 +246,7 @@ async fn start_https_server(
 
             if let Err(err) = http1::Builder::new()
                 .serve_connection(io, service)
+                .with_upgrades()
                 .await
             {
                 error!("Error serving HTTPS connection from {}: {:?}", client_addr, err);
