@@ -1,14 +1,18 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 
+use crate::config::{DomainConfig, HeaderConfig};
 use crate::error_pages::{generate_html_error, generate_json_error, is_api_request};
 use crate::load_balancer::{ConnectionGuard, LoadBalancerManager};
+use crate::php_fpm::PhpFpm;
 use crate::security::AltareFlux;
+use crate::static_files::{add_security_headers, StaticFileServer};
 use anyhow::Result;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::client::conn::http1;
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use hyper_util::rt::TokioIo;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -21,6 +25,9 @@ pub struct ProxyHandler {
     lb_manager: Arc<LoadBalancerManager>,
     security: Arc<AltareFlux>,
     timeout: Duration,
+    domain_configs: Arc<HashMap<String, DomainConfig>>,
+    static_servers: Arc<HashMap<String, StaticFileServer>>,
+    php_handlers: Arc<HashMap<String, PhpFpm>>,
 }
 
 impl ProxyHandler {
@@ -28,11 +35,44 @@ impl ProxyHandler {
         lb_manager: Arc<LoadBalancerManager>,
         security: Arc<AltareFlux>,
         timeout_secs: u64,
+        domain_configs: HashMap<String, DomainConfig>,
     ) -> Self {
+        // Build static servers and PHP handlers
+        let mut static_servers = HashMap::new();
+        let mut php_handlers = HashMap::new();
+
+        for (domain, config) in &domain_configs {
+            if let Some(static_config) = &config.static_files {
+                if static_config.enabled {
+                    static_servers.insert(
+                        domain.clone(),
+                        StaticFileServer::new(&static_config.root),
+                    );
+                }
+            }
+
+            if let Some(php_config) = &config.php_fpm {
+                if php_config.enabled {
+                    let doc_root = config
+                        .static_files
+                        .as_ref()
+                        .map(|s| s.root.clone())
+                        .unwrap_or_else(|| "/var/www".to_string());
+                    php_handlers.insert(
+                        domain.clone(),
+                        PhpFpm::new(php_config.socket.clone(), doc_root),
+                    );
+                }
+            }
+        }
+
         Self {
             lb_manager,
             security,
             timeout: Duration::from_secs(timeout_secs),
+            domain_configs: Arc::new(domain_configs),
+            static_servers: Arc::new(static_servers),
+            php_handlers: Arc::new(php_handlers),
         }
     }
 

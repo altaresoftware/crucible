@@ -48,7 +48,8 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DomainConfig {
-    /// Backend hosts to load balance between
+    /// Backend hosts to load balance between (optional if using static/PHP)
+    #[serde(default)]
     pub backends: Vec<String>,
 
     /// SSL/TLS configuration
@@ -62,6 +63,56 @@ pub struct DomainConfig {
     /// Health check configuration
     #[serde(default)]
     pub health_check: HealthCheckConfig,
+
+    /// Static file serving configuration
+    #[serde(default)]
+    pub static_files: Option<StaticFilesConfig>,
+
+    /// PHP-FPM configuration
+    #[serde(default)]
+    pub php_fpm: Option<PhpFpmConfig>,
+
+    /// HTTP to HTTPS redirect
+    #[serde(default)]
+    pub redirect_to_https: bool,
+
+    /// Custom headers to add to responses
+    #[serde(default)]
+    pub headers: Vec<HeaderConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StaticFilesConfig {
+    /// Enable static file serving
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Document root directory
+    pub root: String,
+
+    /// Try files pattern (like nginx try_files)
+    #[serde(default)]
+    pub try_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PhpFpmConfig {
+    /// Enable PHP-FPM
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// PHP-FPM socket path
+    pub socket: String,
+
+    /// Script timeout in seconds
+    #[serde(default = "default_php_timeout")]
+    pub timeout: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct HeaderConfig {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -379,6 +430,10 @@ fn default_tls_window() -> u64 {
     60
 }
 
+fn default_php_timeout() -> u64 {
+    300 // 5 minutes
+}
+
 impl Config {
     /// Load configuration from a YAML file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -396,8 +451,13 @@ impl Config {
     /// Validate the configuration
     fn validate(&self) -> Result<()> {
         for (domain, domain_config) in &self.domains {
-            if domain_config.backends.is_empty() {
-                anyhow::bail!("Domain '{}' has no backend hosts configured", domain);
+            let has_static = domain_config.static_files.as_ref().map(|s| s.enabled).unwrap_or(false);
+            let has_php = domain_config.php_fpm.as_ref().map(|p| p.enabled).unwrap_or(false);
+            let has_backends = !domain_config.backends.is_empty();
+
+            // Must have at least one: backends, static files, or PHP
+            if !has_backends && !has_static && !has_php {
+                anyhow::bail!("Domain '{}' must have backends, static files, or PHP-FPM configured", domain);
             }
 
             if domain_config.ssl.enabled {
@@ -413,6 +473,20 @@ impl Config {
             for backend in &domain_config.backends {
                 if !backend.starts_with("http://") && !backend.starts_with("https://") {
                     anyhow::bail!("Backend '{}' for domain '{}' must start with http:// or https://", backend, domain);
+                }
+            }
+
+            // Validate static files config
+            if let Some(static_config) = &domain_config.static_files {
+                if static_config.enabled && static_config.root.is_empty() {
+                    anyhow::bail!("Domain '{}' has static files enabled but no root specified", domain);
+                }
+            }
+
+            // Validate PHP-FPM config
+            if let Some(php_config) = &domain_config.php_fpm {
+                if php_config.enabled && php_config.socket.is_empty() {
+                    anyhow::bail!("Domain '{}' has PHP-FPM enabled but no socket specified", domain);
                 }
             }
         }

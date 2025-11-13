@@ -1,0 +1,69 @@
+# Crucible Configuration for Pterodactyl Panel
+# Replaces Nginx configuration
+# Copyright (c) Altare Technologies Limited
+
+server:
+  http_port: 80
+  https_port: 443
+  timeout: 120  # Longer timeout for PHP processing
+  max_connections_per_backend: 1024
+
+  security:
+    enabled: true
+    block_tor: true
+    block_bots: true
+    rate_limit:
+      default_rps: 20
+      api_rps: 100
+
+domains:
+  gateway.altr.cc:
+    # HTTP to HTTPS redirect
+    redirect_to_https: true
+
+    # SSL Configuration (Let's Encrypt)
+    ssl:
+      enabled: true
+      cert_path: /etc/letsencrypt/live/gateway.altr.cc/fullchain.pem
+      key_path: /etc/letsencrypt/live/gateway.altr.cc/privkey.pem
+
+    # Static file serving
+    static_files:
+      enabled: true
+      root: /var/www/pterodactyl/public
+      # try_files equivalent to nginx
+      try_files:
+        - "$uri"
+        - "$uri/"
+        - "/index.php?$query_string"
+
+    # PHP-FPM Configuration
+    php_fpm:
+      enabled: true
+      socket: /run/php/php8.3-fpm.sock
+      timeout: 300  # 5 minutes for long PHP scripts
+
+    # Security Headers (matching nginx config)
+    headers:
+      - name: X-Content-Type-Options
+        value: nosniff
+      - name: X-XSS-Protection
+        value: "1; mode=block"
+      - name: X-Robots-Tag
+        value: none
+      - name: Content-Security-Policy
+        value: "frame-ancestors 'self'"
+      - name: X-Frame-Options
+        value: DENY
+      - name: Referrer-Policy
+        value: same-origin
+      # Optional: Uncomment after https://hstspreload.org/ setup
+      # - name: Strict-Transport-Security
+      #   value: "max-age=15768000; preload"
+
+# Multiple domains example
+  # example.com:
+  #   backends:
+  #     - http://localhost:3000
+  #     - http://localhost:3001
+  #   load_balance_strategy: round_robin

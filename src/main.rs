@@ -4,9 +4,11 @@ mod config;
 mod error_pages;
 mod health;
 mod load_balancer;
+mod php_fpm;
 mod proxy;
 mod security;
 mod ssl;
+mod static_files;
 
 use crate::config::Config;
 use crate::health::initialize_health_checks;
@@ -108,11 +110,12 @@ async fn main() -> Result<()> {
         info!("Security system will continue with degraded functionality");
     }
 
-    // Create proxy handler
+    // Create proxy handler with domain configs
     let proxy_handler = Arc::new(ProxyHandler::new(
         lb_manager.clone(),
         security.clone(),
         config.server.timeout,
+        config.domains.clone(),
     ));
 
     // Start HTTP server
