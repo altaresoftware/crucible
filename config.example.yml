@@ -1,0 +1,82 @@
+# Crucible Reverse Proxy Configuration
+# Copyright (c) Altare Technologies Limited
+
+# Global server configuration
+server:
+  # HTTP port (default: 80)
+  http_port: 80
+
+  # HTTPS port (default: 443)
+  https_port: 443
+
+  # Number of worker threads (default: CPU count)
+  # workers: 4
+
+  # Connection timeout in seconds (default: 30)
+  timeout: 30
+
+  # Maximum concurrent connections per backend (default: 1024)
+  max_connections_per_backend: 1024
+
+# Domain configurations
+domains:
+  # Example domain with SSL enabled
+  example.com:
+    # Backend servers for load balancing
+    backends:
+      - http://localhost:3000
+      - http://localhost:3001
+      - http://localhost:3002
+
+    # SSL/TLS configuration
+    ssl:
+      enabled: true
+      cert_path: /path/to/example.com/cert.pem
+      key_path: /path/to/example.com/key.pem
+
+    # Load balancing strategy: round_robin, least_connections, or ip_hash
+    load_balance_strategy: round_robin
+
+    # Health check configuration
+    health_check:
+      enabled: true
+      interval: 10  # seconds
+      timeout: 5    # seconds
+      path: /health # health check endpoint
+
+  # Example domain without SSL
+  api.example.com:
+    backends:
+      - http://10.0.1.10:8080
+      - http://10.0.1.11:8080
+
+    ssl:
+      enabled: false
+
+    load_balance_strategy: least_connections
+
+    health_check:
+      enabled: true
+      interval: 5
+      timeout: 3
+      path: /api/health
+
+  # Example with IP hash load balancing (sticky sessions)
+  app.example.com:
+    backends:
+      - http://192.168.1.100:8000
+      - http://192.168.1.101:8000
+      - http://192.168.1.102:8000
+
+    ssl:
+      enabled: true
+      cert_path: /path/to/app.example.com/cert.pem
+      key_path: /path/to/app.example.com/key.pem
+
+    load_balance_strategy: ip_hash
+
+    health_check:
+      enabled: true
+      interval: 15
+      timeout: 5
+      path: /

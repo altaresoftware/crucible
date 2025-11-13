@@ -1,0 +1,40 @@
+# Copyright (c) Altare Technologies Limited. All rights reserved.
+
+version: '3.8'
+
+services:
+  crucible:
+    build: .
+    image: crucible:latest
+    container_name: crucible-proxy
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config.yml:/etc/crucible/config.yml:ro
+      - ./certs:/etc/crucible/certs:ro
+    restart: unless-stopped
+    networks:
+      - crucible-net
+
+  # Example backend service 1
+  backend1:
+    image: nginx:alpine
+    container_name: backend1
+    networks:
+      - crucible-net
+    environment:
+      - NGINX_PORT=80
+
+  # Example backend service 2
+  backend2:
+    image: nginx:alpine
+    container_name: backend2
+    networks:
+      - crucible-net
+    environment:
+      - NGINX_PORT=80
+
+networks:
+  crucible-net:
+    driver: bridge
