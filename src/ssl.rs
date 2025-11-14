@@ -2,8 +2,10 @@
 
 use anyhow::{Context, Result};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::server::ResolvesServerCertUsingSni;
+use rustls::sign::CertifiedKey;
 use rustls::ServerConfig;
-use std::collections::HashMap;
+use rustls::crypto::ring;
 use std::fs::File;
 use std::io::{BufReader, Seek};
 use std::sync::Arc;
@@ -11,13 +13,15 @@ use tokio_rustls::TlsAcceptor;
 
 /// Load SSL certificates and keys for multiple domains
 pub struct SslManager {
-    acceptors: HashMap<String, TlsAcceptor>,
+    domains: Vec<(String, Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    acceptor: Option<TlsAcceptor>,
 }
 
 impl SslManager {
     pub fn new() -> Self {
         Self {
-            acceptors: HashMap::new(),
+            domains: Vec::new(),
+            acceptor: None,
         }
     }
 
@@ -28,29 +32,42 @@ impl SslManager {
         cert_path: &str,
         key_path: &str,
     ) -> Result<()> {
-        let config = load_ssl_config(cert_path, key_path)
-            .context(format!("Failed to load SSL config for domain: {}", domain))?;
-
-        let acceptor = TlsAcceptor::from(Arc::new(config));
-        self.acceptors.insert(domain, acceptor);
-
+        // Load certs and key and store for later SNI resolver build
+        let (certs, key) = load_certs_and_key(cert_path, key_path)
+            .context(format!("Failed to load SSL materials for domain: {}", domain))?;
+        self.domains.push((domain, certs, key));
         Ok(())
     }
 
-    /// Get the TLS acceptor for a specific domain (for future SNI support)
-    #[allow(dead_code)]
-    pub fn get_acceptor(&self, domain: &str) -> Option<&TlsAcceptor> {
-        self.acceptors.get(domain)
-    }
+    /// Build a single TLS acceptor that selects certificates via SNI
+    pub fn build_acceptor(&mut self) -> Result<()> {
+        let mut resolver = ResolvesServerCertUsingSni::new();
 
-    /// Get the first available TLS acceptor
-    pub fn get_first_acceptor(&self) -> Option<&TlsAcceptor> {
-        self.acceptors.values().next()
+        for (domain, certs, key) in &self.domains {
+            let signing_key = ring::sign::any_supported_type(key)
+                .context("Unsupported or invalid private key type")?;
+            let certified_key = CertifiedKey::new(certs.clone(), signing_key);
+            resolver
+                .add(domain.as_str(), certified_key)
+                .context(format!("Failed adding certificate for domain {}", domain))?;
+        }
+
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(resolver));
+
+        self.acceptor = Some(TlsAcceptor::from(Arc::new(config)));
+        Ok(())
     }
 
     /// Check if any domains have SSL configured
     pub fn has_ssl_domains(&self) -> bool {
-        !self.acceptors.is_empty()
+        !self.domains.is_empty()
+    }
+
+    /// Get the unified TLS acceptor (after build_acceptor)
+    pub fn get_acceptor(&self) -> Option<&TlsAcceptor> {
+        self.acceptor.as_ref()
     }
 }
 
@@ -60,8 +77,8 @@ impl Default for SslManager {
     }
 }
 
-/// Load SSL configuration from certificate and key files
-fn load_ssl_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
+/// Load certificate chain and private key from files
+fn load_certs_and_key(cert_path: &str, key_path: &str) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)> {
     // Load certificates
     let cert_file = File::open(cert_path)
         .context(format!("Failed to open certificate file: {}", cert_path))?;
@@ -80,16 +97,9 @@ fn load_ssl_config(cert_path: &str, key_path: &str) -> Result<ServerConfig> {
         .context(format!("Failed to open private key file: {}", key_path))?;
     let mut key_reader = BufReader::new(key_file);
 
-    let key = load_private_key(&mut key_reader)
-        .context("Failed to load private key")?;
+    let key = load_private_key(&mut key_reader).context("Failed to load private key")?;
 
-    // Build TLS configuration
-    let config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .context("Failed to build TLS configuration")?;
-
-    Ok(config)
+    Ok((certs, key))
 }
 
 /// Load private key from PEM file

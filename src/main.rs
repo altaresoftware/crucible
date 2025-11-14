@@ -24,6 +24,19 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{error, info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use clap::Parser;
+
+#[derive(Parser, Debug)]
+#[command(name = "crucible", about = "Altare Crucible reverse proxy")] 
+struct Args {
+    /// Path to a single YAML config file. If provided, overrides --sites-dir.
+    #[arg(long)]
+    config: Option<String>,
+
+    /// Base directory containing sites_available and sites_enabled (default: /etc/crucible)
+    #[arg(long, default_value = "/etc/crucible")]
+    sites_dir: String,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -39,9 +52,18 @@ async fn main() -> Result<()> {
     info!("Starting Crucible - High Performance Reverse Proxy");
     info!("Copyright (c) Altare Technologies Limited");
 
+    // Parse CLI
+    let args = Args::parse();
+
     // Load configuration
-    let config = Config::from_file("config.yml")
-        .context("Failed to load configuration from config.yml")?;
+    let config = if let Some(path) = args.config.as_deref() {
+        info!("Loading configuration from file: {}", path);
+        Config::from_file(path).with_context(|| format!("Failed to load configuration from {}", path))?
+    } else {
+        let base = &args.sites_dir;
+        info!("Loading configuration from sites dir: {}/sites_enabled", base);
+        Config::from_sites_dir(base).with_context(|| format!("Failed to load configuration from sites dir {}", base))?
+    };
 
     info!("Configuration loaded successfully");
     info!("HTTP Port: {}", config.server.http_port);
@@ -127,8 +149,11 @@ async fn main() -> Result<()> {
         }
     });
 
-    // Start HTTPS server if SSL is configured
+    // Build unified SNI TLS acceptor and start HTTPS server if SSL is configured
     if ssl_manager.has_ssl_domains() {
+        ssl_manager
+            .build_acceptor()
+            .context("Failed to build TLS acceptor with SNI")?;
         let https_port = config.server.https_port;
         let ssl_manager = Arc::new(ssl_manager);
 
@@ -162,7 +187,7 @@ async fn start_http_server(port: u16, proxy_handler: Arc<ProxyHandler>) -> Resul
     info!("HTTP server listening on {}", addr);
 
     loop {
-        let (mut stream, client_addr) = match listener.accept().await {
+        let (stream, client_addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to accept connection: {}", e);
@@ -208,7 +233,7 @@ async fn start_https_server(
     info!("HTTPS server listening on {}", addr);
 
     loop {
-        let (mut stream, client_addr) = match listener.accept().await {
+        let (stream, client_addr) = match listener.accept().await {
             Ok(v) => v,
             Err(e) => {
                 error!("Failed to accept connection: {}", e);
@@ -222,10 +247,9 @@ async fn start_https_server(
         let security = security.clone();
 
         tokio::task::spawn(async move {
-            // For simplicity, we'll use the first available acceptor
-            // In a production system, you'd want SNI-based selection
+            // Use unified SNI-based acceptor
             let acceptor = ssl_manager
-                .get_first_acceptor()
+                .get_acceptor()
                 .expect("No SSL acceptor available");
 
             let tls_stream = match acceptor.accept(stream).await {

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
  
 use tracing::{debug, warn};
+use crate::error_pages::generate_html_autoindex;
 
 /// Static file server
 pub struct StaticFileServer {
@@ -277,6 +278,73 @@ impl StaticFileServer {
             );
         }
 
+        Some(response)
+    }
+
+    /// Serve a styled directory listing when autoindex is enabled
+    async fn serve_autoindex(
+        &self,
+        dir_path: &Path,
+        request_path: &str,
+        method: &Method,
+    ) -> Option<Response<BoxBody<Bytes, hyper::Error>>> {
+        if method != Method::GET && method != Method::HEAD {
+            return None;
+        }
+
+        let mut entries = match fs::read_dir(dir_path).await {
+            Ok(rd) => rd,
+            Err(e) => {
+                warn!("Failed to read directory {:?}: {}", dir_path, e);
+                return None;
+            }
+        };
+
+        let mut items: Vec<(String, bool)> = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name();
+            let name = file_name.to_string_lossy().into_owned();
+            if name == "." || name == ".." { continue; }
+            let p = entry.path();
+            let is_dir = match fs::metadata(&p).await { Ok(m) => m.is_dir(), Err(_) => false };
+            items.push((name, is_dir));
+        }
+        items.sort_by(|a, b| a.0.to_lowercase().cmp(&b.0.to_lowercase()));
+
+        // Build HTML list
+        let mut list_html = String::new();
+        list_html.push_str("<ul class=\"divide-y divide-neutral-200 dark:divide-neutral-800\">\n");
+        // Parent link
+        if request_path != "/" {
+            let parent = if let Some(pos) = request_path.trim_end_matches('/').rfind('/') {
+                if pos == 0 { "/".to_string() } else { request_path[..pos].to_string() }
+            } else { "/".to_string() };
+            list_html.push_str(&format!("<li class=\"py-2\"><a class=\"text-sky-600 hover:underline\" href=\"{}\">../</a></li>\n", parent));
+        }
+        for (name, is_dir) in items {
+            let mut href = String::from(request_path);
+            if !href.ends_with('/') { href.push('/'); }
+            href.push_str(&name);
+            if is_dir { href.push('/'); }
+            let display = if is_dir { format!("{}/", name) } else { name };
+            list_html.push_str(&format!("<li class=\"py-2 flex items-center justify-between\"><a class=\"text-sky-600 hover:underline\" href=\"{}\">{}</a></li>\n", href, display));
+        }
+        list_html.push_str("</ul>\n");
+
+        let title = format!("Index of {}", request_path);
+        let html = generate_html_autoindex(&title, "Generated directory listing", &list_html);
+
+        let body = if method == Method::HEAD {
+            Empty::<Bytes>::new().map_err(|never| match never {}).boxed()
+        } else {
+            Full::new(Bytes::from(html)).map_err(|never| match never {}).boxed()
+        };
+
+        let response = Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "text/html; charset=utf-8")
+            .body(body)
+            .unwrap();
         Some(response)
     }
 
