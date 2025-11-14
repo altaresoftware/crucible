@@ -93,6 +93,10 @@ pub struct StaticFilesConfig {
     /// Try files pattern (like nginx try_files)
     #[serde(default)]
     pub try_files: Vec<String>,
+
+    /// Enable directory listing (like nginx autoindex)
+    #[serde(default)]
+    pub autoindex: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
