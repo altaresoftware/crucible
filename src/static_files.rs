@@ -58,7 +58,7 @@ impl StaticFileServer {
             }
             // If autoindex is enabled, generate directory listing
             if self.autoindex {
-                return self.serve_directory(&file_path, path).await;
+                return self.serve_autoindex(&file_path, path, method).await;
             }
             return None;
         }

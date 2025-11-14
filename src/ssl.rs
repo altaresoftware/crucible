@@ -47,8 +47,16 @@ impl SslManager {
             let signing_key = ring::sign::any_supported_type(key)
                 .context("Unsupported or invalid private key type")?;
             let certified_key = CertifiedKey::new(certs.clone(), signing_key);
+
+            // Normalize domain: strip port and convert to lowercase for SNI matching
+            let normalized_domain = domain
+                .split(':')
+                .next()
+                .unwrap_or(domain)
+                .to_lowercase();
+
             resolver
-                .add(domain.as_str(), certified_key)
+                .add(&normalized_domain, certified_key)
                 .context(format!("Failed adding certificate for domain {}", domain))?;
         }
 
