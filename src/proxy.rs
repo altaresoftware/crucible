@@ -213,7 +213,7 @@ impl ProxyHandler {
                 if static_config.enabled {
                     static_servers.insert(
                         domain.clone(),
-                        StaticFileServer::new(&static_config.root),
+                        StaticFileServer::new(&static_config.root, static_config.autoindex),
                     );
                 }
             }

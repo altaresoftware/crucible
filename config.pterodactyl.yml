@@ -61,6 +61,25 @@ domains:
       # - name: Strict-Transport-Security
       #   value: "max-age=15768000; preload"
 
+  pkg.altr.cc:
+    # HTTP to HTTPS redirect
+    redirect_to_https: true
+
+    # SSL Configuration (Let's Encrypt)
+    ssl:
+      enabled: true
+      cert_path: /etc/letsencrypt/live/pkg.altr.cc/fullchain.pem
+      key_path: /etc/letsencrypt/live/pkg.altr.cc/privkey.pem
+
+    # Static file serving for APT repository
+    static_files:
+      enabled: true
+      root: /srv/apt/repos
+      autoindex: true  # Enable directory listing for APT repos
+      try_files:
+        - "$uri"
+        - "$uri/"
+
 # Multiple domains example
   # example.com:
   #   backends:
