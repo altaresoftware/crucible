@@ -7,7 +7,7 @@ use crate::security::{
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
@@ -93,6 +93,10 @@ pub struct StaticFilesConfig {
     /// Try files pattern (like nginx try_files)
     #[serde(default)]
     pub try_files: Vec<String>,
+
+    /// Generate directory listings when no index file is present
+    #[serde(default)]
+    pub autoindex: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -446,6 +450,79 @@ impl Config {
         config.validate()?;
 
         Ok(config)
+    }
+
+    /// Load configuration by merging all YAML files under base_dir/sites_enabled.
+    /// Ensures base_dir/sites-available and base_dir/sites-enabled exist.
+    pub fn from_sites_dir<P: AsRef<Path>>(base_dir: P) -> Result<Self> {
+        let base = base_dir.as_ref();
+        let sites_available = base.join("sites_available");
+        let sites_enabled = base.join("sites_enabled");
+
+        // Ensure directories exist
+        fs::create_dir_all(&sites_available).with_context(|| {
+            format!("Failed to create sites_available at {:?}", sites_available)
+        })?;
+        fs::create_dir_all(&sites_enabled).with_context(|| {
+            format!("Failed to create sites_enabled at {:?}", sites_enabled)
+        })?;
+
+        // Start with defaults
+        let mut merged = Config {
+            server: ServerConfig::default(),
+            domains: HashMap::new(),
+        };
+
+        // Collect YAML files in sites_enabled
+        let mut files: Vec<PathBuf> = Vec::new();
+        for entry in fs::read_dir(&sites_enabled).context("Failed to read sites_enabled directory")? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext.eq_ignore_ascii_case("yml") || ext.eq_ignore_ascii_case("yaml") {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+        files.sort();
+
+        // Helper that accepts files with either a full Config shape or just domains
+        #[derive(Deserialize)]
+        struct PartialConfig {
+            #[serde(default)]
+            server: Option<ServerConfig>,
+            #[serde(default)]
+            domains: HashMap<String, DomainConfig>,
+        }
+
+        for file in files {
+            let content = fs::read_to_string(&file)
+                .with_context(|| format!("Failed to read site file {:?}", file))?;
+            // Try parsing as full config first
+            if let Ok(cfg) = serde_yaml::from_str::<Config>(&content) {
+                // Merge server (last one wins) and domains (last file overrides duplicates)
+                merged.server = cfg.server;
+                for (d, c) in cfg.domains {
+                    merged.domains.insert(d, c);
+                }
+                continue;
+            }
+
+            // Fallback: parse partial
+            let partial: PartialConfig = serde_yaml::from_str(&content)
+                .with_context(|| format!("Failed to parse YAML in {:?}", file))?;
+            if let Some(server) = partial.server {
+                merged.server = server;
+            }
+            for (d, c) in partial.domains {
+                merged.domains.insert(d, c);
+            }
+        }
+
+        merged.validate()?;
+        Ok(merged)
     }
 
     /// Validate the configuration
