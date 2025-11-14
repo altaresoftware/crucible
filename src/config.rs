@@ -94,7 +94,7 @@ pub struct StaticFilesConfig {
     #[serde(default)]
     pub try_files: Vec<String>,
 
-    /// Generate directory listings when no index file is present
+    /// Enable directory listing (like nginx autoindex)
     #[serde(default)]
     pub autoindex: bool,
 }

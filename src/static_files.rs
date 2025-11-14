@@ -56,8 +56,9 @@ impl StaticFileServer {
                     return self.serve_file(&index_path, method, req_headers).await;
                 }
             }
+            // If autoindex is enabled, generate directory listing
             if self.autoindex {
-                return self.serve_autoindex(&file_path, path, method).await;
+                return self.serve_directory(&file_path, path).await;
             }
             return None;
         }
@@ -381,6 +382,157 @@ impl StaticFileServer {
         }
         None
     }
+
+    /// Generate and serve directory listing
+    async fn serve_directory(
+        &self,
+        dir_path: &Path,
+        uri_path: &str,
+    ) -> Option<Response<BoxBody<Bytes, hyper::Error>>> {
+        // Read directory entries
+        let mut entries = match fs::read_dir(dir_path).await {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("Failed to read directory {:?}: {}", dir_path, e);
+                return None;
+            }
+        };
+
+        let mut files: Vec<(String, bool, u64)> = Vec::new();
+
+        // Collect directory entries
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+
+            // Skip hidden files (starting with .)
+            if file_name.starts_with('.') {
+                continue;
+            }
+
+            if let Ok(metadata) = entry.metadata().await {
+                let is_dir = metadata.is_dir();
+                let size = if is_dir { 0 } else { metadata.len() };
+                files.push((file_name, is_dir, size));
+            }
+        }
+
+        // Sort: directories first, then files, both alphabetically
+        files.sort_by(|a, b| {
+            match (a.1, b.1) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.0.cmp(&b.0),
+            }
+        });
+
+        // Generate HTML
+        let mut html = format!(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Index of {}</title>
+    <style>
+        body {{ font-family: monospace; margin: 2em; }}
+        h1 {{ border-bottom: 1px solid #ccc; padding-bottom: 0.5em; }}
+        table {{ border-collapse: collapse; width: 100%; }}
+        th {{ text-align: left; padding: 0.5em; border-bottom: 2px solid #ccc; }}
+        td {{ padding: 0.5em; border-bottom: 1px solid #eee; }}
+        a {{ text-decoration: none; color: #0066cc; }}
+        a:hover {{ text-decoration: underline; }}
+        .size {{ text-align: right; }}
+    </style>
+</head>
+<body>
+    <h1>Index of {}</h1>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th class="size">Size</th>
+            </tr>
+        </thead>
+        <tbody>
+"#,
+            uri_path, uri_path
+        );
+
+        // Add parent directory link if not at root
+        if uri_path != "/" {
+            html.push_str(r#"            <tr><td><a href="../">../</a></td><td class="size">-</td></tr>
+"#);
+        }
+
+        // Add directory entries
+        for (name, is_dir, size) in files {
+            let display_name = if is_dir {
+                format!("{}/", name)
+            } else {
+                name.clone()
+            };
+
+            let size_str = if is_dir {
+                "-".to_string()
+            } else {
+                format_size(size)
+            };
+
+            html.push_str(&format!(
+                r#"            <tr><td><a href="{}">{}</a></td><td class="size">{}</td></tr>
+"#,
+                urlencoding::encode(&name),
+                html_escape(&display_name),
+                size_str
+            ));
+        }
+
+        html.push_str(
+            r#"        </tbody>
+    </table>
+</body>
+</html>
+"#,
+        );
+
+        // Build response
+        let body = Full::new(Bytes::from(html))
+            .map_err(|e| match e {})
+            .boxed();
+
+        Some(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/html; charset=utf-8")
+                .body(body)
+                .unwrap(),
+        )
+    }
+}
+
+/// Format file size in human-readable format
+fn format_size(size: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if size >= GB {
+        format!("{:.1}G", size as f64 / GB as f64)
+    } else if size >= MB {
+        format!("{:.1}M", size as f64 / MB as f64)
+    } else if size >= KB {
+        format!("{:.1}K", size as f64 / KB as f64)
+    } else {
+        format!("{}", size)
+    }
+}
+
+/// Escape HTML special characters
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Determine content type from file extension
