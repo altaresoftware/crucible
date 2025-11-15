@@ -79,6 +79,10 @@ pub struct DomainConfig {
     /// Custom headers to add to responses
     #[serde(default)]
     pub headers: Vec<HeaderConfig>,
+
+    /// CORS configuration
+    #[serde(default)]
+    pub cors: Option<CorsConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -117,6 +121,51 @@ pub struct PhpFpmConfig {
 pub struct HeaderConfig {
     pub name: String,
     pub value: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CorsConfig {
+    /// Enable CORS
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Allowed origins (e.g., ["https://example.com", "https://console.example.com"])
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
+
+    /// Allowed HTTP methods
+    #[serde(default = "default_cors_methods")]
+    pub allowed_methods: Vec<String>,
+
+    /// Allowed headers
+    #[serde(default = "default_cors_headers")]
+    pub allowed_headers: Vec<String>,
+
+    /// Exposed headers
+    #[serde(default = "default_cors_exposed_headers")]
+    pub exposed_headers: Vec<String>,
+
+    /// Allow credentials
+    #[serde(default)]
+    pub allow_credentials: bool,
+
+    /// Max age in seconds for preflight cache
+    #[serde(default = "default_cors_max_age")]
+    pub max_age: u64,
+}
+
+impl Default for CorsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allowed_origins: Vec::new(),
+            allowed_methods: default_cors_methods(),
+            allowed_headers: default_cors_headers(),
+            exposed_headers: default_cors_exposed_headers(),
+            allow_credentials: false,
+            max_age: default_cors_max_age(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -436,6 +485,39 @@ fn default_tls_window() -> u64 {
 
 fn default_php_timeout() -> u64 {
     300 // 5 minutes
+}
+
+fn default_cors_methods() -> Vec<String> {
+    vec![
+        "GET".to_string(),
+        "POST".to_string(),
+        "PUT".to_string(),
+        "DELETE".to_string(),
+        "PATCH".to_string(),
+        "HEAD".to_string(),
+        "OPTIONS".to_string(),
+    ]
+}
+
+fn default_cors_headers() -> Vec<String> {
+    vec![
+        "Content-Type".to_string(),
+        "Authorization".to_string(),
+        "Accept".to_string(),
+        "Origin".to_string(),
+        "X-Requested-With".to_string(),
+    ]
+}
+
+fn default_cors_exposed_headers() -> Vec<String> {
+    vec![
+        "Content-Length".to_string(),
+        "Content-Type".to_string(),
+    ]
+}
+
+fn default_cors_max_age() -> u64 {
+    86400 // 24 hours
 }
 
 impl Config {

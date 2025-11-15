@@ -1,6 +1,6 @@
 // Copyright (c) Altare Technologies Limited. All rights reserved.
 
-use crate::config::DomainConfig;
+use crate::config::{CorsConfig, DomainConfig};
 use crate::error_pages::{generate_html_error, generate_json_error, is_api_request};
 use crate::load_balancer::{ConnectionGuard, LoadBalancerManager};
 use crate::php_fpm::PhpFpm;
@@ -136,6 +136,16 @@ impl ProxyHandler {
                 })
                 .unwrap_or_default();
             add_security_headers(resp.headers_mut(), &headers_vec);
+
+            // Add CORS headers if enabled
+            if let Some(cors_config) = domain_config.and_then(|c| c.cors.as_ref()) {
+                if cors_config.enabled {
+                    if let Some(origin) = get_origin(&req) {
+                        add_cors_headers(&mut resp, cors_config, &origin);
+                    }
+                }
+            }
+
             return Ok(resp);
         }
 
@@ -272,6 +282,20 @@ impl ProxyHandler {
 
         let domain_config = self.domain_configs.get(&host);
 
+        // Extract origin early for CORS handling
+        let origin = get_origin(&req);
+
+        // Handle CORS preflight requests early
+        if method == Method::OPTIONS {
+            if let Some(cors_config) = domain_config.and_then(|c| c.cors.as_ref()) {
+                if cors_config.enabled {
+                    if let Some(ref origin_str) = origin {
+                        return Ok(handle_cors_preflight(cors_config, origin_str));
+                    }
+                }
+            }
+        }
+
         // Handle WebSocket upgrades early (avoid rate-limit loops on HMR reconnects)
         if is_ws_upgrade(&req) {
             return self
@@ -372,6 +396,16 @@ impl ProxyHandler {
                     })
                     .unwrap_or_default();
                 add_security_headers(response.headers_mut(), &headers_vec);
+
+                // Add CORS headers if enabled
+                if let Some(cors_config) = domain_config.and_then(|c| c.cors.as_ref()) {
+                    if cors_config.enabled {
+                        if let Some(ref origin_str) = origin {
+                            add_cors_headers(&mut response, cors_config, origin_str);
+                        }
+                    }
+                }
+
                 return Ok(response);
             }
 
@@ -432,6 +466,9 @@ impl ProxyHandler {
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         debug!("Handling PHP request: {}", path);
 
+        // Extract origin for CORS before consuming request
+        let origin = get_origin(&req);
+
         let method_str = req.method().as_str().to_string();
         let headers = req.headers().clone();
         let method = req.method().clone();
@@ -468,6 +505,16 @@ impl ProxyHandler {
                     })
                     .unwrap_or_default();
                 add_security_headers(response.headers_mut(), &headers_vec);
+
+                // Add CORS headers if enabled
+                if let Some(cors_config) = domain_config.and_then(|c| c.cors.as_ref()) {
+                    if cors_config.enabled {
+                        if let Some(ref origin_str) = origin {
+                            add_cors_headers(&mut response, cors_config, origin_str);
+                        }
+                    }
+                }
+
                 Ok(response)
             }
             Err(e) => {
@@ -493,6 +540,9 @@ impl ProxyHandler {
         is_https: bool,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
         debug!("Handling PHP request: {} -> {}", request_uri, script_path);
+
+        // Extract origin for CORS before consuming request
+        let origin = get_origin(&req);
 
         let method_str = req.method().as_str().to_string();
         let headers = req.headers().clone();
@@ -527,6 +577,15 @@ impl ProxyHandler {
                         .map(|h| (h.name.clone(), h.value.clone()))
                         .collect();
                     add_security_headers(response.headers_mut(), &headers_vec);
+
+                    // Add CORS headers if enabled
+                    if let Some(cors_config) = config.cors.as_ref() {
+                        if cors_config.enabled {
+                            if let Some(ref origin_str) = origin {
+                                add_cors_headers(&mut response, cors_config, origin_str);
+                            }
+                        }
+                    }
                 }
                 Ok(response)
             }
@@ -549,6 +608,8 @@ impl ProxyHandler {
         client_addr: SocketAddr,
         domain_config: Option<&DomainConfig>,
     ) -> Result<Response<BoxBody<Bytes, hyper::Error>>> {
+        // Extract origin for CORS before consuming request
+        let origin = get_origin(&req);
         // Get load balancer for this domain
         let lb = match self.lb_manager.get_balancer(host).await {
             Some(lb) => lb,
@@ -594,6 +655,16 @@ impl ProxyHandler {
                     })
                     .unwrap_or_default();
                 add_security_headers(response.headers_mut(), &headers_vec);
+
+                // Add CORS headers if enabled
+                if let Some(cors_config) = domain_config.and_then(|c| c.cors.as_ref()) {
+                    if cors_config.enabled {
+                        if let Some(ref origin_str) = origin {
+                            add_cors_headers(&mut response, cors_config, origin_str);
+                        }
+                    }
+                }
+
                 Ok(response)
             }
             Err(e) => {
@@ -678,6 +749,90 @@ fn extract_host(req: &Request<Incoming>) -> Option<String> {
             h.split(':').next().unwrap_or(h).to_string()
         })
         .or_else(|| req.uri().host().map(|h| h.to_string()))
+}
+
+/// Check if an origin is allowed by CORS configuration
+fn is_origin_allowed(origin: &str, cors_config: &CorsConfig) -> bool {
+    cors_config
+        .allowed_origins
+        .iter()
+        .any(|allowed| {
+            // Exact match
+            allowed == origin
+        })
+}
+
+/// Get the origin from request headers
+fn get_origin(req: &Request<Incoming>) -> Option<String> {
+    req.headers()
+        .get("origin")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+}
+
+/// Handle CORS preflight OPTIONS request
+fn handle_cors_preflight(
+    cors_config: &CorsConfig,
+    origin: &str,
+) -> Response<BoxBody<Bytes, hyper::Error>> {
+    let mut response = Response::builder().status(StatusCode::OK);
+
+    if is_origin_allowed(origin, cors_config) {
+        response = response.header("Access-Control-Allow-Origin", origin);
+
+        if cors_config.allow_credentials {
+            response = response.header("Access-Control-Allow-Credentials", "true");
+        }
+
+        let methods = cors_config.allowed_methods.join(", ");
+        response = response.header("Access-Control-Allow-Methods", methods);
+
+        let headers = cors_config.allowed_headers.join(", ");
+        response = response.header("Access-Control-Allow-Headers", headers);
+
+        let exposed = cors_config.exposed_headers.join(", ");
+        response = response.header("Access-Control-Expose-Headers", exposed);
+
+        response = response.header(
+            "Access-Control-Max-Age",
+            cors_config.max_age.to_string(),
+        );
+    }
+
+    response
+        .body(
+            Empty::<Bytes>::new()
+                .map_err(|never| match never {})
+                .boxed(),
+        )
+        .unwrap()
+}
+
+/// Add CORS headers to a response
+fn add_cors_headers(
+    response: &mut Response<BoxBody<Bytes, hyper::Error>>,
+    cors_config: &CorsConfig,
+    origin: &str,
+) {
+    if is_origin_allowed(origin, cors_config) {
+        response.headers_mut().insert(
+            "Access-Control-Allow-Origin",
+            origin.parse().unwrap(),
+        );
+
+        if cors_config.allow_credentials {
+            response.headers_mut().insert(
+                "Access-Control-Allow-Credentials",
+                "true".parse().unwrap(),
+            );
+        }
+
+        let exposed = cors_config.exposed_headers.join(", ");
+        response.headers_mut().insert(
+            "Access-Control-Expose-Headers",
+            exposed.parse().unwrap(),
+        );
+    }
 }
 
 /// Estimate header size for security checks
