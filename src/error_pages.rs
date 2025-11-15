@@ -133,11 +133,6 @@ html {{
         </div>
         <code style="font-family: 'Space Mono'" class="text-xs text-neutral-300 dark:text-neutral-400 uppercase">POWERED BY ALTARE CRUCIBLE / V{version}</code>
       </div>
-      <hr class="my-6 w-full border-(--pattern-fg)" />
-      <p class="mb-3">If you'd like to see updates regarding Altare's status:</p>
-      <p class="font-semibold">
-        <a href="https://status.altare.tech" class="text-neutral-950 underline decoration-sky-400 underline-offset-3 hover:decoration-2 dark:text-white">Join our Discord server &rarr;</a>
-      </p>
     </div>
   </div>
   <div class="relative -right-px col-start-2 row-span-full row-start-1 border-x border-x-(--pattern-fg) bg-[image:repeating-linear-gradient(315deg,_var(--pattern-fg)_0,_var(--pattern-fg)_1px,_transparent_0,_transparent_50%)] bg-[size:10px_10px] bg-fixed"></div>
